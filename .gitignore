@@ -1,0 +1,41 @@
+# ---------- 构建产物 ----------
+target/
+*.jar
+!lib/*.jar
+
+# ---------- 本机运行数据（每个用户机器上都不一样）----------
+data/
+updater-runs/
+logs/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# ---------- 本机配置与授权状态 ----------
+config.properties
+access.dat
+access.dat.bak-*
+device.id
+
+# ---------- IDE / 编辑器 ----------
+.idea/
+*.iml
+.vscode/
+*.swp
+.DS_Store
+
+# ---------- 本地工作区数据（不进版本库）----------
+.workbuddy/
+
+# ---------- python ----------
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# ---------- 临时文件 ----------
+*.tmp
+*.bak
+*.orig
+*.rej

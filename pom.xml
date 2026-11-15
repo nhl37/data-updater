@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <!--
+      数据更新程序：独立源码树、独立构建、独立发布物。
+      这个模块只依赖第三方库，不引入任何本仓库以外的编译产物或业务类。
+      源码根固定为本模块下的 src/main/java，包命名空间为 updater.*。
+    -->
+    <groupId>com.datatools.updater</groupId>
+    <artifactId>StockDataUpdater</artifactId>
+    <version>1.0.0</version>
+    <packaging>jar</packaging>
+
+    <name>StockDataUpdater</name>
+    <description>A 股本地行情库的数据更新工具：从本地行情软件或在线接口抓取日线、分钟线、
+        除权、财报、股东、公告等数据，写入按股票分库的 SQLite 库。</description>
+    <!-- 发布到公开仓库后在这里补 <url> 与 <scm> -->
+    <licenses>
+        <license>
+            <name>MIT License</name>
+            <url>https://opensource.org/licenses/MIT</url>
+            <distribution>repo</distribution>
+        </license>
+    </licenses>
+
+    <properties>
+        <maven.compiler.source>17</maven.compiler.source>
+        <maven.compiler.target>17</maven.compiler.target>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>com.alibaba.fastjson2</groupId>
+            <artifactId>fastjson2</artifactId>
+            <version>2.0.59</version>
+        </dependency>
+        <!-- 私有库要用加密版驱动：需要 SQLiteMCConfig 打开带密码的库 -->
+        <dependency>
+            <groupId>io.github.willena</groupId>
+            <artifactId>sqlite-jdbc</artifactId>
+            <version>3.50.1.0</version>
+        </dependency>
+        <dependency>
+            <groupId>com.formdev</groupId>
+            <artifactId>flatlaf</artifactId>
+            <version>3.7.2</version>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <!--
+          python 脚本随 jar 一起走：除权 / 财报 / 股本三处都要调 python，脚本原来只在
+          <程序目录>/python/ 下，jar 被单独挪到别处启动时就找不到（除权任务的典型失败）。
+          这里直接把本工程的 python/ 打进 jar 的 python/ 目录。
+
+          本工程已与主程序 StockSearch 拆成同级目录，所以 python 脚本**自备一份**
+          （akshare_capital / read_tdx_finance / read_tdx_gbbq），不再借主程序目录里的文件。
+          主程序自己还留着同名脚本，两边各一份、互不引用。
+        -->
+        <resources>
+            <resource>
+                <directory>src/main/resources</directory>
+            </resource>
+            <resource>
+                <directory>${project.basedir}/python</directory>
+                <targetPath>python</targetPath>
+                <filtering>false</filtering>
+                <includes>
+                    <include>*.py</include>
+                </includes>
+            </resource>
+        </resources>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <release>17</release>
+                    <encoding>UTF-8</encoding>
+                </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-shade-plugin</artifactId>
+                <version>3.5.1</version>
+                <executions>
+                    <execution>
+                        <phase>package</phase>
+                        <goals><goal>shade</goal></goals>
+                        <configuration>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>updater.main.updater.UpdaterMain</mainClass>
+                                </transformer>
+                            </transformers>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>
