@@ -1,119 +1,63 @@
-# 构建
+# 任务
 
-需要 JDK 17 + Maven。源码在 <https://github.com/nhl37/data-updater>（公开仓库，MIT）。
+把开源项目 <https://github.com/nhl37/data-updater>（MIT，公开仓库）编译成这台机器上能跑起来的数据更新工具。
 
-## 第 1 步：拿到源码
+这份文档只给**目标、验收标准、已知的坑**，不规定动作顺序。目标机器的系统、网络、已装工具都不一样，照抄任何一条命令都可能失败——**怎么拿源码、走不走代理、用不用 git，由你按现场情况决定**。文中出现的命令都只是示例。
 
-GitHub 在国内常常连不上，这跟项目本身无关。下面四条路**任意一条成功即可**。
+## 验收（三条都满足才算完成）
 
-硬规则：每条最多试 1 次、网络超时按 15 秒；失败立刻换下一条，不要反复重试同一条命令，也不要因为下不到源码就改构建命令。
+1. 源码树完整：有 `pom.xml`、`src/main/java/updater/`、`python/`。整包约 500KB，只有几 KB 或几十 KB 肯定是没下到。
+2. `mvn -DskipTests package` 通过，产出 `target/StockDataUpdater-1.0.0.jar`。
+3. 能启动：有桌面弹 GUI，无桌面进控制台菜单，例如
+   `java -jar target/StockDataUpdater-1.0.0.jar --data-dir ./data`（数据目录不存在会自己建）。
+   启动即报错退出不算完成。
 
-**怎么算拿到了**：目录里同时有 `pom.xml` 和 `src/main/java/updater/`。只下到一个几十 KB 的文件、或解压出来只有 README，都是没拿到（下回来的是错误页），换下一条。
+## 不要做
 
-### 路 1：直接 clone（GitHub 能连上就走这条）
+- 不改 `pom.xml` 的依赖和版本、不改 `build.sh`、不改业务代码。唯一例外：`proguard-updater.cfg` 里的 JDK 绝对路径可以改，混淆本身是可选项。
+- 不引入来源不明的源码包或可执行文件，只从项目仓库或它的镜像获取。
+- 不用关闭校验（`http.sslVerify=false` 之类）、跳过编译错误的方式"跑通"。
+- 不把本机配置和设备号（`config.properties`、`device.id`、`access.dat`）带进交付物。
 
-```bash
-git clone --depth 1 https://github.com/nhl37/data-updater.git && cd data-updater
-```
+## 需要你自己判断的三件事
 
-### 路 2：git 挂镜像加速（clone 命令一个字都不用改）
+1. **"命令返回 0"不等于下载成功。** 判定只认事实：文件在不在、大小对不对、解压后有 `pom.xml`。被拦截时经常返回 0 却下回来一个几十 KB 的 HTML 错误页。
+2. **换路之前先想清楚上一条为什么失败。** 同一个办法最多试一次；镜像、代理这类东西随时失效，别在同一个地址上反复重试，也别死守一种办法。
+3. **优先用本机已有的东西。** 有代理软件就用代理，没装 git 就下 zip，Windows 没有 `curl`/`unzip` 就用 PowerShell 或 Python，别为了凑某条命令先去装一堆东西。
 
-镜像站随时会失效，先探测，再用返回 200 的那个：
-
-```bash
-for m in https://gh-proxy.com/https://github.com/ https://ghfast.top/https://github.com/; do
-  printf '%s ' "$m"
-  curl -s -o /dev/null -w '%{http_code}\n' --max-time 8 \
-    "${m}nhl37/data-updater.git/info/refs?service=git-upload-pack"
-done
-```
-
-用探测到的那个克隆（`-c` 只作用于这一条命令，不改全局 git 配置）：
+示例（只示意形式，不是必须照着做）：
 
 ```bash
-git -c 'url.https://gh-proxy.com/https://github.com/.insteadOf=https://github.com/' \
-    clone --depth 1 https://github.com/nhl37/data-updater.git && cd data-updater
+git clone --depth 1 https://github.com/nhl37/data-updater.git
+curl -L -o src.zip https://github.com/nhl37/data-updater/archive/refs/heads/main.zip   # 不装 git 也能下
+git -c 'url.https://gh-proxy.com/https://github.com/.insteadOf=https://github.com/' clone --depth 1 <仓库地址>  # 镜像前缀，只对本次生效
 ```
 
-### 路 3：机器上装了代理（Clash / v2ray 等）
+## 已知的坑
 
-先找可用代理（`HTTPS_PROXY` 环境变量，或 7890 / 10809 / 1080 这类本地端口）：
+| 现象 | 大概率原因 | 思路 |
+|---|---|---|
+| clone 超时 / `Connection timed out` / `Could not resolve host` | GitHub 直连被拦 | 换镜像前缀、走本机代理、改成下 zip；都不通就换网络（手机热点） |
+| 下载很快但文件只有几十 KB，解压没 `pom.xml` | 下回来的是错误页 | 换镜像或改用 git 重下 |
+| clone "成功"但目录是空的（只有 `.git`） | 镜像缓存了旧状态 | 换另一个镜像或直连，别在原地反复 clone |
+| `mvn` 依赖下载失败 / `repo.maven.apache.org` 连不上 | 中央仓库被限速 | 配阿里云镜像（`mirrorOf` 写 `central`），别改 pom 里的版本 |
+| `Could not create local repository` | HOME 或权限不对 | `mvn -Dmaven.repo.local=$HOME/.m2/repository -Duser.home=$HOME …` |
+| `pthread_create EAGAIN` | 内存小、核数被高估 | 限制 `-XX:ActiveProcessorCount=2 -Xmx768m` |
+| 启动后中文乱码 | 默认编码不是 UTF-8 | `-Dfile.encoding=UTF-8` |
+| ProGuard 找不到 jmod | 配置里 JDK 路径写死 | 混淆可不做；要做就把路径改成 `$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")` |
+| Windows 缺 `curl` / `unzip` | 系统工具不全 | PowerShell `Invoke-WebRequest`、`Expand-Archive`，或用 Python |
 
-```bash
-for p in "${HTTPS_PROXY:-}" "${https_proxy:-}" http://127.0.0.1:7890 http://127.0.0.1:10809 http://127.0.0.1:1080; do
-  [ -z "$p" ] && continue
-  code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -x "$p" https://github.com)
-  if [ "$code" = 200 ] || [ "$code" = 301 ] || [ "$code" = 302 ]; then echo "可用代理: $p"; break; fi
-done
-```
+## 表里没有的问题，也要你解决
 
-```bash
-git -c http.proxy=http://127.0.0.1:7890 -c https.proxy=http://127.0.0.1:7890 \
-    clone --depth 1 https://github.com/nhl37/data-updater.git && cd data-updater
-```
+这份文档一定不全。遇到没写的情况：
 
-没装代理软件就跳过这条。
+1. 先判断是不是**环境问题**——路径、权限、编码、磁盘空间、防火墙、杀毒软件拦截、端口占用、代理残留变量，能自己修就修；
+2. 再判断是不是**版本问题**——JDK 是否 17+、Maven 是否 3.6+、git 是否 2.x，缺什么装什么；
+3. 修完继续往下走，不要停下来等人确认；
+4. 只有确实需要外部信息（账号、付费软件、需要本人在场操作）才停下来问。
 
-### 路 4：不装 git 也能下（直接下 zip）
+## 交付时说明
 
-```bash
-curl -L --max-time 60 -o src.zip https://codeload.github.com/nhl37/data-updater/zip/refs/tags/v1.0.0
-```
-
-连不上就换镜像前缀，后面的路径不变：
-
-```bash
-curl -L --max-time 60 -o src.zip https://gh-proxy.com/https://github.com/nhl37/data-updater/archive/refs/tags/v1.0.0.zip
-curl -L --max-time 60 -o src.zip https://ghfast.top/https://github.com/nhl37/data-updater/archive/refs/tags/v1.0.0.zip
-```
-
-```bash
-unzip -q src.zip && cd data-updater-1.0.0
-```
-
-Windows 没有 `unzip`：右键解压，然后进 `data-updater-1.0.0` 目录。
-
-## 第 2 步：构建
-
-源码树就位后（当前目录是 `data-updater` 或 `data-updater-1.0.0`），后续与源码怎么来的无关：
-
-```bash
-mvn -DskipTests package
-cp config.example.properties config.properties
-java -jar target/StockDataUpdater-1.0.0.jar --data-dir /path/to/data
-```
-
-有桌面弹 GUI，无桌面进控制台菜单，都算成功。
-
-## 依赖下载也连不上
-
-源码之外的第二个网络卡点是 Maven 中央仓库 / PyPI。给 `~/.m2/settings.xml` 配阿里云镜像（`mirrorOf` 写 `central`），
-Python 依赖加 `-i https://pypi.tuna.tsinghua.edu.cn/simple`。别因为下载慢去改 `pom.xml` 里的依赖版本。
-
-## 混淆版（可选）
-
-ProGuard 7.x 的 jar 放 `~/.cache/tools/`：`proguard-base` `proguard-core` `proguard-annotations` `log4j-api` `log4j-core` `slf4j-api` `log4j-slf4j2-impl`。
-
-`proguard-updater.cfg` 里 JDK 路径写死了，先改：
-
-```bash
-JDK_HOME=$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")
-sed -i "s#/usr/lib/jvm/java-17-openjdk-amd64#$JDK_HOME#g" proguard-updater.cfg
-./build.sh
-```
-
-产物 `StockDataUpdater.jar`。
-
-## 报错
-
-| 报错 | 处理 |
-|---|---|
-| `Failed to connect to github.com` / `Could not resolve host` / `Connection timed out` | 换路 2 / 3 / 4，别重试同一条 |
-| `src.zip` 只有几十 KB、解压出来没有 `pom.xml` | 下回来的是错误页，换镜像重下 |
-| `Could not create local repository` | `mvn -Dmaven.repo.local=$HOME/.m2/repository -Duser.home=$HOME -DskipTests package` |
-| 依赖下载超时 / `repo.maven.apache.org` 连不上 | 配阿里云镜像，见「依赖下载也连不上」 |
-| `pthread_create EAGAIN` | `export MAVEN_OPTS="-XX:ActiveProcessorCount=2 -Xmx768m"` |
-| ProGuard 找不到 jmod | 上面的 sed 没执行 |
-| 中文乱码 | `java -Dfile.encoding=UTF-8 -jar ...` |
-
-Python 脚本需要 `pytdx pandas pytdxdata akshare`，缺哪个只影响对应任务。
+- 源码是怎么拿到的（clone / 镜像 / zip / 代理）
+- 构建命令、产物路径、启动方式
+- 遇到并解决了哪些问题，哪些没解决
