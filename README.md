@@ -12,16 +12,22 @@ Java 17 + Swing，打成单个 jar，不需要服务端。
 
 ## 构建
 
+开发调试用的包，未混淆、含依赖，文件名带 `pom.xml` 里的版本号：
+
 ```bash
 mvn -DskipTests package
-java -jar target/StockDataUpdater-1.0.0.jar
+java -jar target/StockDataUpdater-1.0.1.jar
 ```
 
-发布构建会多一步混淆，产出 `StockDataUpdater.jar`：
+发布构建会多一步混淆，并清掉全部中转包，最后工程里**只留一个不带版本号的** `StockDataUpdater.jar`：
 
 ```bash
 ./build.sh
 ```
+
+`build.sh` 把 fat jar、拆包后的 `app` / `lib`、混淆后的 `app-obf` 这些中转件全部放在系统临时目录（`$TMPDIR/sdu-build.*`），构建结束即删 —— 工程目录里自始至终不会出现第二个 jar，`target/` 下也不留包，只保留 `classes/` 供下次增量编译。收尾会断言整棵工程目录里只有一个 jar，且必须是不带版本号的那个，否则直接报错退出。
+
+版本号只从 `pom.xml` 读，脚本里不写死：改 `<version>` 不需要动 `build.sh`。
 
 ## 运行
 

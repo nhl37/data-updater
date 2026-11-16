@@ -87,6 +87,33 @@ public class ReaderFromTdx {
         }
         return code;
     }
+
+    /**
+     * vipdoc 里的 .day 文件名 → <b>指数</b>代码；不是指数返回 null。
+     *
+     * <p>跟 {@link #codeOf(String, String)} 是<b>两条互斥的线</b>，不要合并：
+     * 那条线刻意跳过指数（指数不能进个股清单、不能参与选股、不能被查缺补漏当成股票对账），
+     * 这一条只给「指数数据」任务用 —— 它要的就是那批被跳过的文件。</p>
+     *
+     * <p>判定口径跟 {@link updater.util.SecurityType#isIndex(String)} 一致：
+     * 沪市 {@code sh000xxx}、深市 {@code sz399xxx}、北证 {@code bj899xxx}。
+     * 指数和个股共用 6 位代码，靠市场前缀才分得开（{@code sh000001} 是上证指数、
+     * {@code sz000001} 是平安银行），所以这里必须带前缀判断。</p>
+     */
+    public static String indexCodeOf(String prefix, String fileName) {
+        if (fileName == null) {
+            return null;
+        }
+        int pointIndex = fileName.indexOf(".");
+        if (pointIndex == -1 || !"day".equals(fileName.substring(pointIndex + 1))) {
+            return null;
+        }
+        String code = fileName.substring(0, pointIndex);
+        if (!code.startsWith(prefix)) {
+            return null;
+        }
+        return updater.util.SecurityType.isIndex(code) ? code : null;
+    }
     private void insertAllData(File[] file, String prefix) throws IOException, ConfigException {
 //        TdxDayDataReader reader = new TdxDayDataReader();
         Connection dbconn = null;

@@ -7,10 +7,17 @@
 ## 验收（三条都满足才算完成）
 
 1. 源码树完整：有 `pom.xml`、`src/main/java/updater/`、`python/`。整包约 500KB，只有几 KB 或几十 KB 肯定是没下到。
-2. `mvn -DskipTests package` 通过，产出 `target/StockDataUpdater-1.0.0.jar`。
+2. `mvn -DskipTests package` 通过，产出 `target/StockDataUpdater-1.0.1.jar`（带依赖的 fat jar）。
 3. 能启动：有桌面弹 GUI，无桌面进控制台菜单，例如
-   `java -jar target/StockDataUpdater-1.0.0.jar --data-dir ./data`（数据目录不存在会自己建）。
+   `java -jar target/StockDataUpdater-1.0.1.jar --data-dir ./data`（数据目录不存在会自己建）。
    启动即报错退出不算完成。
+
+## 交付物与挂载（名字固定）
+
+- **带版本号的只有 Maven 产物**：`pom.xml` 的版本决定编译产物叫 `target/StockDataUpdater-1.0.1.jar`（版本号以 `pom.xml` 为准），验收看的就是这份；同目录 `original-` 开头的瘦包不带依赖，不能当工具用。若跑过 `./build.sh`，这些中转包会在收尾时被清理掉，`target/` 下不再有 jar —— 那是正常现象，需要时重跑 `mvn -DskipTests package` 即可重新生成。
+- **最终交付/挂载文件不带版本号**：交出来的一定是名为 **`StockDataUpdater.jar`** 的可执行 jar（内容就是上面那份，只换个固定名字）。界面、插件、文档里出现的都是这个名字。发布构建完成后，整棵工程目录里应当**只有这一个 jar**。
+- **挂载文件**：主程序「数据插件 → 添加插件」时选的就是这个 `StockDataUpdater.jar`；「检查」挂载的是**数据文件夹**，其中目录与文件名固定为 `db/`、`finance.db`、`stock_name.db`。
+- 不要把 `updater-app.jar`、`updater-lib.jar` 这类拆包中间产物当成交付物。
 
 ## 不要做
 
@@ -44,6 +51,7 @@ git -c 'url.https://gh-proxy.com/https://github.com/.insteadOf=https://github.co
 | `Could not create local repository` | HOME 或权限不对 | `mvn -Dmaven.repo.local=$HOME/.m2/repository -Duser.home=$HOME …` |
 | `pthread_create EAGAIN` | 内存小、核数被高估 | 限制 `-XX:ActiveProcessorCount=2 -Xmx768m` |
 | 启动后中文乱码 | 默认编码不是 UTF-8 | `-Dfile.encoding=UTF-8` |
+| `java -jar` 一启就 `NoClassDefFoundError` | 选了 `original-` 开头的瘦包，或拿了拆包中间产物 | 用带依赖的编译产物，最终命名 `StockDataUpdater.jar` |
 | ProGuard 找不到 jmod | 配置里 JDK 路径写死 | 混淆可不做；要做就把路径改成 `$(dirname "$(dirname "$(readlink -f "$(command -v javac)")")")` |
 | Windows 缺 `curl` / `unzip` | 系统工具不全 | PowerShell `Invoke-WebRequest`、`Expand-Archive`，或用 Python |
 
@@ -59,5 +67,6 @@ git -c 'url.https://gh-proxy.com/https://github.com/.insteadOf=https://github.co
 ## 交付时说明
 
 - 源码是怎么拿到的（clone / 镜像 / zip / 代理）
-- 构建命令、产物路径、启动方式
+- 构建命令、编译产物路径（`target/StockDataUpdater-1.0.1.jar`）、最终交付文件名（`StockDataUpdater.jar`，不带版本号）、启动方式
+- 挂载时选的文件名，以及数据文件夹里的 `db/`、`finance.db`、`stock_name.db` 是否齐了
 - 遇到并解决了哪些问题，哪些没解决

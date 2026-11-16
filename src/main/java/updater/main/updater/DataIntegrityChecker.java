@@ -91,10 +91,31 @@ public final class DataIntegrityChecker {
         public int minNeedOnline;
         /** 在线线路补进去的 5 分钟根数 */
         public long minOnlineRows;
+        /** 本次核了日线没有：只核 5 分钟线时（MIN5_INTEGRITY）结论行只讲分钟线 */
+        public boolean dailyChecked = true;
         public long elapsedMs;
 
         public String describeScan() {
             StringBuilder sb = new StringBuilder();
+            if (!dailyChecked) {
+                sb.append("核对 ").append(total).append(" 只 5 分钟线：到最新 ").append(ok);
+                int bad = missingDb + broken + gap;
+                if (bad == 0) {
+                    sb.append("，没有发现缺口");
+                } else {
+                    sb.append("，待补 ").append(bad).append(" 只（缺库 ").append(missingDb)
+                            .append("、打不开 ").append(broken).append("、分钟线落后 ").append(gap)
+                            .append("）");
+                    if (minNeedOnline > 0) {
+                        sb.append("；其中 ").append(minNeedOnline).append(" 只没有本地分钟文件，修复时走在线线路");
+                    }
+                }
+                sb.append(" · 用时 ").append(formatDuration(elapsedMs));
+                if (bad > 0) {
+                    sb.append("（点「修复缺失」按台账补齐）");
+                }
+                return sb.toString();
+            }
             sb.append("扫描 ").append(total).append(" 只：完整 ").append(ok);
             int bad = missingDb + broken + gap;
             if (bad == 0) {
@@ -121,6 +142,11 @@ public final class DataIntegrityChecker {
         }
 
         public String describeRepair() {
+            if (!dailyChecked) {
+                return "修复完成：处理 " + ok + " 只、补入 " + minRowsWritten + " 根 5 分钟线"
+                        + (minOnlineRows > 0 ? "（其中在线线路补 " + minOnlineRows + " 根）" : "")
+                        + " · 用时 " + formatDuration(elapsedMs);
+            }
             return "修复完成：处理好 " + ok + " 只、补入 " + rowsWritten + " 根日线"
                     + (minRowsWritten > 0 ? "、" + minRowsWritten + " 根 5 分钟线" : "")
                     + (minOnlineRows > 0 ? "（其中在线线路补 " + minOnlineRows + " 根）" : "")
@@ -183,10 +209,16 @@ public final class DataIntegrityChecker {
         File[] minFiles;
         /** 补分钟线失败的原因（空 = 没失败） */
         String minFailNote = "";
+        /** 本次有没有核日线：只核 5 分钟线时，日线那几项（缺日期 / 缺表）不参与结论 */
+        boolean dailyChecked = true;
 
         boolean clean() {
-            return !dbBroken && dbExists && missing.isEmpty() && !needTable && !needDivTable
-                    && !needMin;
+            if (dbBroken || !dbExists) {
+                return false;
+            }
+            boolean dailyOk = !dailyChecked
+                    || (missing.isEmpty() && !needTable && !needDivTable);
+            return dailyOk && !needMin;
         }
     }
 
@@ -209,8 +241,22 @@ public final class DataIntegrityChecker {
     public static Summary scan(final java.util.function.Consumer<String> log, final ItemProgress items,
                                final AtomicBoolean cancel, final Collection<String> onlyCodes,
                                final long minTime, final boolean checkMin5) throws Exception {
+        return scan(log, items, cancel, onlyCodes, minTime, checkMin5, true);
+    }
+
+    /**
+     * 完整版对账。
+     *
+     * @param checkDaily false = 只核 5 分钟线（「5 分钟 · 查缺补漏」这条任务走它）：
+     *                   不比对日线日期、不判缺表，台账里只留分钟线的结论
+     */
+    public static Summary scan(final java.util.function.Consumer<String> log, final ItemProgress items,
+                               final AtomicBoolean cancel, final Collection<String> onlyCodes,
+                               final long minTime, final boolean checkMin5,
+                               final boolean checkDaily) throws Exception {
         long start = System.currentTimeMillis();
         final Summary summary = new Summary();
+        summary.dailyChecked = checkDaily;
         final File dbDir = requireDbDir();
         final File vipdoc = TdxDataDir.requireVipdoc();
         final List<Job> jobs = collectJobs(vipdoc, onlyCodes);
@@ -219,8 +265,9 @@ public final class DataIntegrityChecker {
         report(log, "数据文件夹: " + dbDir.getAbsolutePath());
         report(log, "本地数据来源目录: " + vipdoc.getAbsolutePath());
         report(log, "待对账 " + jobs.size() + " 只"
-                + (minTime > 0 ? "（只看 " + fmt(minTime) + " 之后的日线）" : "（全部历史）"));
-        report(log, "对账范围: 日线逐根核；5 分钟线"
+                + (!checkDaily ? "（只核 5 分钟线）"
+                        : minTime > 0 ? "（只看 " + fmt(minTime) + " 之后的日线）" : "（全部历史）"));
+        report(log, "对账范围: " + (!checkDaily ? "只核 5 分钟线" : "日线逐根核") + "；5 分钟线"
                 + (checkMin5
                         ? "逐只核「有没有表 / 末根有没有落后 + 近 " + RECENT_DAYS
                                 + " 个交易日有没有整天断」（有本地分钟文件的 "
@@ -259,7 +306,8 @@ public final class DataIntegrityChecker {
                         Job job = jobs.get(index);
                         items.begin(job.code);
                         try {
-                            Inspection in = inspect(job, dbDir, minTime, minFiles, checkMin5);
+                            Inspection in = inspect(job, dbDir, minTime, minFiles, checkMin5,
+                                    checkDaily);
                             if (in.minChecked) {
                                 minChecked.incrementAndGet();
                             }
@@ -275,10 +323,14 @@ public final class DataIntegrityChecker {
                             } else if (!in.dbExists) {
                                 missDb.incrementAndGet();
                                 missingBars.addAndGet(in.tdxBars);
-                                items.fail(job.code, "本地没有库（数据来源有 " + in.tdxBars + " 根）");
+                                items.fail(job.code, checkDaily
+                                        ? "本地没有库（数据来源有 " + in.tdxBars + " 根）"
+                                        : "本地没有库：先在「盘后数据下载 → 股价查缺补漏」里建库");
                             } else if (in.clean()) {
                                 okCount.incrementAndGet();
-                                items.done(job.code, "完整 · " + in.localBars + " 根");
+                                items.done(job.code, checkDaily
+                                        ? "完整 · " + in.localBars + " 根"
+                                        : "5 分钟线到 " + minuteText(in.localLastMin));
                             } else {
                                 gap.incrementAndGet();
                                 missingBars.addAndGet(in.missing.size());
@@ -390,19 +442,36 @@ public final class DataIntegrityChecker {
                                  final AtomicBoolean cancel, final Collection<String> onlyCodes,
                                  final long minTime, final boolean checkMin5,
                                  final boolean onlineMin5) throws Exception {
+        return repair(log, items, cancel, onlyCodes, minTime, checkMin5, onlineMin5, true);
+    }
+
+    /**
+     * 完整版修复。
+     *
+     * @param checkDaily false = 只补 5 分钟线，日线一根都不动（「5 分钟 · 查缺补漏」走它）
+     */
+    public static Summary repair(final java.util.function.Consumer<String> log, final ItemProgress items,
+                                 final AtomicBoolean cancel, final Collection<String> onlyCodes,
+                                 final long minTime, final boolean checkMin5,
+                                 final boolean onlineMin5, final boolean checkDaily) throws Exception {
         long start = System.currentTimeMillis();
         final Summary summary = new Summary();
+        summary.dailyChecked = checkDaily;
         final File dbDir = requireDbDir();
         final File vipdoc = TdxDataDir.requireVipdoc();
         final List<Job> jobs = collectJobs(vipdoc, onlyCodes);
         final Map<String, File[]> minFiles = MinDataUpdater.minuteFiles(vipdoc);
 
         report(log, "开始修复 " + jobs.size() + " 只"
-                + (minTime > 0 ? "（只补 " + fmt(minTime) + " 之后缺的日线）" : "（补全部缺失）"));
-        report(log, checkMin5
-                ? "缺日线就补那几根；缺 5 分钟线的，有本地分钟文件就从文件补到最新，"
-                        + "没有文件的" + (onlineMin5 ? "再走在线线路补齐" : "本次跳过")
-                : "只补缺的日线，本次不检查 5 分钟线");
+                + (!checkDaily ? "（只补 5 分钟线，日线不动）"
+                        : minTime > 0 ? "（只补 " + fmt(minTime) + " 之后缺的日线）" : "（补全部缺失）"));
+        report(log, !checkDaily
+                ? "5 分钟线：有本地分钟文件就从文件补到最新（连中间断档一起补），没有文件的"
+                        + (onlineMin5 ? "再走在线线路补齐" : "本次跳过")
+                : checkMin5
+                        ? "缺日线就补那几根；缺 5 分钟线的，有本地分钟文件就从文件补到最新，"
+                                + "没有文件的" + (onlineMin5 ? "再走在线线路补齐" : "本次跳过")
+                        : "只补缺的日线，本次不检查 5 分钟线");
         items.planned(keysOf(jobs));
 
         final int workers = Math.max(1, Math.min(Parallelism.resolve(), jobs.size()));
@@ -432,7 +501,7 @@ public final class DataIntegrityChecker {
                         items.begin(job.code);
                         try {
                             RepairResult result = repairOne(job, dbDir, minTime, minFiles,
-                                    checkMin5);
+                                    checkMin5, checkDaily);
                             if (result.rows > 0) {
                                 rows.addAndGet(result.rows);
                             }
@@ -523,15 +592,21 @@ public final class DataIntegrityChecker {
     /** 修一只：缺库就建、库坏了先备份再建、缺表就补表、缺日期就只补那几根、分钟线落后就补分钟线 */
     private static RepairResult repairOne(Job job, File dbDir, long minTime,
                                           Map<String, File[]> minFiles,
-                                          boolean checkMin5) throws Exception {
+                                          boolean checkMin5, boolean checkDaily) throws Exception {
         RepairResult result = new RepairResult();
         File dbFile = new File(dbDir, job.code + ".db");
         boolean existed = dbFile.isFile();
 
-        Inspection in = inspect(job, dbDir, minTime, minFiles, checkMin5);
+        Inspection in = inspect(job, dbDir, minTime, minFiles, checkMin5, checkDaily);
         if (in.data.isEmpty()) {
             // 分钟线依附日线库：没有日线就不该为它单独造一个只有分钟表的空壳库
             result.note = "本地数据来源里没有这只的日线";
+            return result;
+        }
+        if (!checkDaily && !existed) {
+            // 只补分钟线的这一趟不建库：只有分钟表、没有日线的空壳库对脚本毫无用处，
+            // 而且下一次日线对账还得把它当问题重新处理
+            result.note = "本地没有库：先在「盘后数据下载 → 股价查缺补漏」里把日线补上";
             return result;
         }
 
@@ -555,14 +630,16 @@ public final class DataIntegrityChecker {
             DataTableManager table = new DataTableManager();
             table.setConn(conn);
 
-            boolean fresh = !existed;
-            if (fresh || in.needTable || in.needDivTable) {
+            boolean fresh = !existed && checkDaily;
+            if (checkDaily && (fresh || in.needTable || in.needDivTable)) {
                 // CREATE TABLE IF NOT EXISTS：缺哪张补哪张，已经有的不动
                 table.createDataTable(job.code);
             }
 
             List<TdxStockData> toWrite;
-            if (fresh) {
+            if (!checkDaily) {
+                toWrite = Collections.emptyList();
+            } else if (fresh) {
                 toWrite = in.data;
             } else if (in.missing.isEmpty()) {
                 toWrite = Collections.emptyList();
@@ -632,6 +709,18 @@ public final class DataIntegrityChecker {
     private static String repairNote(Inspection in, boolean fresh, String backupNote,
                                      RepairResult result) {
         StringBuilder sb = new StringBuilder();
+        if (!in.dailyChecked) {
+            // 只补 5 分钟线的一趟：只说分钟线补了什么，别提日线
+            if (result.minRows > 0) {
+                sb.append("补入 5 分钟线 ").append(result.minRows).append(" 根");
+            } else if (result.needOnlineMin) {
+                sb.append("没有本地分钟文件，转在线线路补");
+            } else {
+                sb.append(in.minFailNote.isEmpty()
+                        ? "5 分钟线已经到最新，没有可补的" : "5 分钟线补失败：" + in.minFailNote);
+            }
+            return sb.toString();
+        }
         if (fresh) {
             sb.append(in.dbBroken ? "重建库" : "新建库").append("，写入 ").append(result.rows).append(" 根");
         } else if (result.rows > 0) {
@@ -672,9 +761,11 @@ public final class DataIntegrityChecker {
     // ================================================================== 单只对账
 
     private static Inspection inspect(Job job, File dbDir, long minTime,
-                                      Map<String, File[]> minFiles, boolean checkMin5) {
+                                      Map<String, File[]> minFiles, boolean checkMin5,
+                                      boolean checkDaily) {
         Inspection in = new Inspection();
         in.code = job.code;
+        in.dailyChecked = checkDaily;
         in.dbFile = new File(dbDir, job.code + ".db");
         in.dbExists = in.dbFile.isFile();
         in.minFiles = minFiles == null ? null : minFiles.get(job.code);
@@ -741,7 +832,7 @@ public final class DataIntegrityChecker {
                 in.lastLocal = last;
             }
             inspectMinutes(in, conn, checkMin5);
-            if (in.data.isEmpty()) {
+            if (!checkDaily || in.data.isEmpty()) {
                 return in;
             }
 
@@ -895,7 +986,9 @@ public final class DataIntegrityChecker {
     /** 「缺 12 根（3 段），最早缺 20230612，末位 20241101（数据来源到 20241108）」 */
     private static String describeProblem(Inspection in) {
         StringBuilder sb = new StringBuilder();
-        if (!in.missing.isEmpty()) {
+        // 只核 5 分钟线的那一趟（dailyChecked=false）不说日线的事，否则台账里满屏
+        // 「缺 12 根日线」，用户会以为点错了按钮
+        if (in.dailyChecked && !in.missing.isEmpty()) {
             if (in.localBars == 0) {
                 // 空壳库（0 字节 / 表被清空）：直接说清楚，别让人以为是「缺了几十根」
                 sb.append("本地库是空的（数据来源有 ").append(in.tdxBars).append(" 根）");
@@ -916,13 +1009,13 @@ public final class DataIntegrityChecker {
                 }
             }
         }
-        if (in.needTable) {
+        if (in.dailyChecked && in.needTable) {
             if (sb.length() > 0) {
                 sb.append("；");
             }
             sb.append("缺日线表");
         }
-        if (in.needDivTable) {
+        if (in.dailyChecked && in.needDivTable) {
             if (sb.length() > 0) {
                 sb.append("；");
             }

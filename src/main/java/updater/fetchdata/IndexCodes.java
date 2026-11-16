@@ -11,11 +11,16 @@ import java.util.Locale;
  * <p>这里是一份<b>固定清单</b>，不从名称库、也不从本地目录推断 —— 指数库建在股票库目录里
  * （和个股同一个文件夹、同样的 {@code sh000001.db} 文件名），读本地库的一方一行都不用改；
  * 代价是它们也会被当成候选股票扫到，所以筛选时要把
- * {@code sh000} / {@code sz399} / {@code bj899} 挑出去（见 {@link #isIndexCode}）。</p>
+ * {@code sh000} / {@code sz399} / {@code bj899} 挑出去（见
+ * {@link updater.util.SecurityType#isIndex(String)}）。</p>
  *
  * <p>只收常用的宽基与板块指数：清单越长，用户越难判断「脚本里该引哪一只」，而冷门指数
  * 大多数人的策略都用不到。要加的指数直接往 {@link #TABLE} 里加一行即可，取数与建库
- * 不需要额外改动 —— 东财的 secid 规则对指数和个股是同一条。</p>
+ * 不需要额外改动 —— 两条取数线路（本地文件 / 东财 secid）对指数和个股都是同一套规则。</p>
+ *
+ * <p><b>取哪条线路由画面上的「数据来源」决定</b>，见 {@code UpdateSources}：默认读本地
+ * 日线文件（{@code vipdoc/{sh,sz,bj}/lday}，见 {@code IndexLocalFetcher}），备用才走东财
+ * 逐只请求（{@code EastMoneyDayFetcher}）。两条线路只补缺的日期，历史以库里已有的为准。</p>
  */
 public final class IndexCodes {
 

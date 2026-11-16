@@ -104,6 +104,22 @@ public class MinDataUpdater {
     public static int[] update(java.util.function.Consumer<String> log,
                                java.util.concurrent.atomic.AtomicBoolean cancel,
                                java.util.Collection<String> onlyCodes) throws Exception {
+        return update(log, cancel, onlyCodes, false);
+    }
+
+    /**
+     * 「补全到本地最新」：{@code fillGaps=true} 时连中间断掉的几天一起补。
+     *
+     * <p>日常盘后只补末根之后的增量（{@code fillGaps=false}，最快）；用户在
+     * 「分钟数据」画面上点「补全到本地最新」时才走这条，把库里缺的那几段补齐 ——
+     * 判重方式从「比末根时间」改成「按已有时刻逐根比」，一只多读约 6600 行。</p>
+     *
+     * @param fillGaps true = 连中间断档一起补
+     */
+    public static int[] update(java.util.function.Consumer<String> log,
+                               java.util.concurrent.atomic.AtomicBoolean cancel,
+                               java.util.Collection<String> onlyCodes,
+                               boolean fillGaps) throws Exception {
         File vipdoc = TdxDataDir.requireVipdoc();
 
         Map<String, File[]> files = collectFiles(vipdoc, true);
@@ -111,9 +127,9 @@ public class MinDataUpdater {
             files.keySet().retainAll(new java.util.HashSet<String>(onlyCodes));
         }
         Log.info("分钟数据：本地数据来源目录 " + vipdoc + "，找到 " + files.size()
-                + " 只股票的文件，只补不删");
+                + " 只股票的文件，只补不删" + (fillGaps ? "（连中间断档一起补）" : ""));
         report(log, "5 分钟线：本地数据来源里找到 " + files.size() + " 只股票的文件，只补不删"
-                + "（库里已有的老数据一条都不动）");
+                + "（库里已有的老数据一条都不动）" + (fillGaps ? "，连中间断掉的几段一起补" : ""));
 
         int done = 0;
         int min5Count = 0;
@@ -142,7 +158,7 @@ public class MinDataUpdater {
                 if (last > latest) {
                     latest = last;
                 }
-                min5Count += writeBars(code, bars);
+                min5Count += writeBars(code, bars, fillGaps);
                 done++;
             } catch (Exception e) {
                 skipped++;

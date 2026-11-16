@@ -182,14 +182,39 @@ def main():
             fail.append('主程序里仍有抓取代码痕迹：%s' % h[:8])
         else:
             print('  主程序抓取特征命中: 0（干净）')
-        # 反向指纹：主程序里也不许出现更新器的名字，免得日后有人拿主程序反推
-        rev = [mk for mk in (b'StockDataUpdater', b'UpdaterInfo', b'data-updater')
+        # 反向指纹：主程序里不许出现更新器的实现类 / 工程坐标，免得日后有人拿主
+        # 程序反推出另一个工程。
+        #
+        # 例外：StockDataUpdater.jar 是「用 AI 编译开源项目」方案里交给用户的**外部
+        # 插件交付文件名**，界面步骤与挂载说明必须原样写出来（方案 3/4 共用规格）。
+        # 它是把更新器当外部插件挂载的凭据，不是代码耦合；一律禁掉反而会让界面与
+        # 规格书对不上。所以只允许这一整串文件名出现，其它形态（类路径、带版本号
+        # 的编译产物、工程目录名）一律算泄露。
+        UPDATER_IMPL_MARKERS = (
+            b'UpdaterInfo', b'UpdaterMain', b'updater.main.', b'data-updater',
+        )
+        rev = [mk for mk in UPDATER_IMPL_MARKERS
                if any(mk in d for d in m.values())]
+        DELIVERY_NAME = b'StockDataUpdater.jar'
+        stray = []
+        for name, d in m.items():
+            pos = 0
+            while True:
+                pos = d.find(b'StockDataUpdater', pos)
+                if pos < 0:
+                    break
+                if d[pos:pos + len(DELIVERY_NAME)] != DELIVERY_NAME:
+                    stray.append((name, d[pos:pos + 40].decode('utf-8', 'ignore')))
+                    break
+                pos += len(DELIVERY_NAME)
         if rev:
-            fail.append('主程序里出现更新器标识：%s'
+            fail.append('主程序里出现更新器实现类/工程标识：%s'
                         % [x.decode('utf-8', 'ignore') for x in rev])
-        else:
-            print('  主程序里的更新器标识: 0（干净）')
+        if stray:
+            fail.append('主程序里出现非交付文件名形态的更新器标识：%s' % stray[:5])
+        if not rev and not stray:
+            print('  主程序里的更新器标识: 0（干净；仅交付文件名 %s）'
+                  % DELIVERY_NAME.decode())
         main_icons = [n for n in m if n.endswith('.png') and n.startswith('icons/app-')]
         if not main_icons:
             fail.append('主程序没有自己的 app 图标')

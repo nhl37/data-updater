@@ -2,8 +2,10 @@ package updater.main.updater;
 
 import updater.f10.AnnouncementFeed;
 import updater.fetchdata.LatestPriceUpdater;
+import updater.fetchdata.IndexLocalFetcher;
 import updater.fetchdata.capital.ShareCapitalSyncService;
 import updater.fetchdata.eastmoney.EastMoneyDayFetcher;
+import updater.fetchdata.min.Min5Coverage;
 import updater.fetchdata.min.Min5Downloader;
 import updater.fetchdata.tdx.TdxDataDir;
 import updater.fetchdata.tdx.kdata.ReaderFromTdx;
@@ -106,8 +108,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 不再一层层弹 {@code JOptionPane} 问。</p>
  *
  * <p>左栏按数据类别分成「股价数据 / 财报与股东 / 研究数据 / 其他数据」四组。
- * 前三组标题上有「查缺补漏」：股价只核日线，财报与股东按报告期逐季对账，其他核名称库。
- * 研究数据是派生的风险 / 估值数据，没有对账口径，所以不挂检查按钮。
+ * 财报与股东、其他数据两组标题上有「查缺补漏」；股价数据那几项各自挂在
+ * 对应画面上（日线 → 盘后数据下载，5 分钟 → 分钟数据，除权 → 除权数据更新），
+ * 因为它们的检查口径不同，挤在一个按钮里只能挑一种。
  * 检查任务都还是任务（有台账、能续跑、能翻历史），但不占组内的任务按钮。</p>
  */
 public class UpdaterFrame extends JFrame {
@@ -208,6 +211,24 @@ public class UpdaterFrame extends JFrame {
     /** 股价查缺补漏：本地没有分钟文件时，允许走在线线路补 */
     private JCheckBox onlineMin5Box;
 
+    /** 「分钟数据」画面上的两行覆盖度统计：库里到哪、本地到哪 */
+    private JLabel min5DbLabel;
+    private JLabel min5LocalLabel;
+    private JLabel min5GapLabel;
+    /** 上次统计结果与时间：来回切页面不必每次都扫一遍全库 */
+    private Min5Coverage lastCoverage;
+    private long lastCoverageAt;
+    /** 统计代数：连着切页面时，只让最后一次的结果落到界面上 */
+    private int coverageGeneration;
+
+    /**
+     * 画面内的「子任务」按钮（补历史 / 指数 / 各类查缺补漏）。
+     *
+     * <p>这些任务不再占左栏，入口就在各自那一页里；跑的时候要跟左栏按钮一起禁用，
+     * 所以统一收在这里。每次重建参数区都会清空重填。</p>
+     */
+    private final List<JButton> pageActions = new ArrayList<JButton>();
+
     /** 数据来源面板：把当前任务的默认与备用线路全列出来，用户可以直接点选 */
     private JPanel sourceZone;
     private ButtonGroup sourceGroup;
@@ -231,6 +252,8 @@ public class UpdaterFrame extends JFrame {
     private DataIntegrityChecker.Summary lastIntegritySummary;
     private FinanceIntegrityChecker.Summary lastFinanceSummary;
     private NameIntegrityChecker.Summary lastNameSummary;
+    /** 除权查缺补漏的汇总 */
+    private DividendIntegrityChecker.Summary lastDividendSummary;
     /** 本次跑的是「修复」而不是「体检」，结果行文案不一样 */
     private boolean runningRepair;
 
@@ -1140,6 +1163,7 @@ public class UpdaterFrame extends JFrame {
     /** 任务参数与数据来源：全部内联，不再弹框问 */
     private void buildParamZone(UpdateTask task) {
         paramZone.removeAll();
+        pageActions.clear();
         buildParamZoneBody(task);
         paramZone.revalidate();
         paramZone.repaint();
@@ -1261,6 +1285,65 @@ public class UpdaterFrame extends JFrame {
                         updater.main.load.LocalDataLoader.showLoadDialog(UpdaterFrame.this);
                     }
                 }));
+
+                // 下面三件都是「日线数据」的不同入口，以前各占一个左栏按钮。
+                // 放在这一页，是因为它们跟盘后下载是同一批数据、同一套线路。
+                paramZone.add(label("其他操作"));
+                paramZone.add(pageAction("补充历史记录",
+                        "把本地数据来源里的全部历史日线并进本地库：只补本地没有的日期，"
+                                + "本地没有库的股票会跳过（场内基金第一次进来靠它）",
+                        UpdateTask.HISTORY, new ParamBuilder() {
+                            @Override
+                            public Map<String, String> build() {
+                                return baseParams();
+                            }
+                        }));
+                paramZone.add(pageAction("股价查缺补漏",
+                        "逐只对账本地数据来源与本地日线、5 分钟线：缺库 / 缺日期 / 分钟线落后都会列进台账，"
+                                + "跑完点右上「修复缺失」按台账补齐",
+                        UpdateTask.INTEGRITY, new ParamBuilder() {
+                            @Override
+                            public Map<String, String> build() {
+                                return integrityParams();
+                            }
+                        }));
+
+                // 检查范围跟上面的按钮配套：放同一行，别让人以为它管的是「盘后下载」
+                JPanel checkBox = new JPanel(new FlowLayout(FlowLayout.LEFT, 6, 0));
+                checkBox.setOpaque(false);
+                checkBox.add(label("范围"));
+                rangeCombo = new JComboBox<String>(INTEGRITY_RANGES);
+                rangeCombo.setFont(BODY);
+                rangeCombo.setPreferredSize(new Dimension(110, 26));
+                rangeCombo.setSelectedIndex(0);
+                checkBox.add(rangeCombo);
+                checkMin5Box = new JCheckBox("检查 5 分钟数据");
+                checkMin5Box.setSelected(true);
+                checkMin5Box.setOpaque(false);
+                checkMin5Box.setFont(BODY);
+                checkMin5Box.setToolTipText("每只都核 T_D_Min5：有没有表、末根落后、近 10 个交易日有没有整天缺；"
+                        + "本地没有分钟文件的股票也一起核");
+                checkBox.add(checkMin5Box);
+                onlineMin5Box = new JCheckBox("缺的用在线线路补");
+                onlineMin5Box.setSelected(true);
+                onlineMin5Box.setOpaque(false);
+                onlineMin5Box.setFont(BODY);
+                onlineMin5Box.setToolTipText("本地数据来源没有分钟文件时，修复阶段改走在线逐只取 5 分钟线；"
+                        + "在线这一档会在东方财富 / 新浪 / 腾讯之间逐只换源；关掉就只补有本地文件的那些");
+                checkBox.add(onlineMin5Box);
+                paramZone.add(checkBox);
+
+                paramZone.add(pageAction("指数数据",
+                        "取 " + updater.fetchdata.IndexCodes.all().size()
+                                + " 个常用指数的全部日线（点数 + 成交量 / 成交额）；"
+                                + "取数走下面「数据来源」选的线路，默认读本地日线文件（不联网），"
+                                + "本地取不到时换在线；本地没有库会新建，已有的只补缺的日期",
+                        UpdateTask.INDEX_DATA, new ParamBuilder() {
+                            @Override
+                            public Map<String, String> build() {
+                                return baseParams();
+                            }
+                        }));
                 break;
             }
             case LATEST_PRICE: {
@@ -1323,16 +1406,80 @@ public class UpdaterFrame extends JFrame {
             case MIN_DATA: {
                 paramZone.add(hintLabel("只入 5 分钟线，只补不删；盘后数据下载、补最新价格都可以顺带补，"
                         + "这里用于单独补跑。本地文件这条路走不通时会自动换一条"));
+                // 两边的「到哪一天了」上下摆出来：一样就不用跑，库浅一截就该点补全
+                min5DbLabel = statLabel("库里 5 分钟线：统计中…");
+                min5LocalLabel = statLabel("本地文件：统计中…");
+                min5GapLabel = statLabel(" ");
+                JPanel stats = new JPanel();
+                stats.setOpaque(false);
+                stats.setLayout(new BoxLayout(stats, BoxLayout.Y_AXIS));
+                for (JLabel line : new JLabel[]{min5DbLabel, min5LocalLabel, min5GapLabel}) {
+                    line.setAlignmentX(Component.LEFT_ALIGNMENT);
+                    stats.add(line);
+                }
+                paramZone.add(stats);
+                JButton refresh = UpdaterKit.button("刷新", new ActionListener() {
+                    @Override
+                    public void actionPerformed(ActionEvent e) {
+                        refreshMin5Coverage(true);
+                    }
+                });
+                refresh.setFont(SMALL);
+                refresh.setToolTipText("重新统计「库里最新」与「本地文件最新」（扫全库，几秒钟）");
+                paramZone.add(refresh);
+
+                paramZone.add(pageAction("补全到本地最新",
+                        "读本地分钟文件，把库里缺的补到本地最新那一刻；连中间断掉的几天一起补，只补不删，不联网",
+                        UpdateTask.MIN_DATA, new ParamBuilder() {
+                            @Override
+                            public Map<String, String> build() {
+                                return min5FillParams();
+                            }
+                        }));
+                paramZone.add(pageAction("查缺补漏",
+                        "逐只核 T_D_Min5：表在不在、末根有没有落后、最近 10 个交易日有没有整天缺；"
+                                + "跑完点右上「修复缺失」按台账补齐",
+                        UpdateTask.MIN5_INTEGRITY, new ParamBuilder() {
+                            @Override
+                            public Map<String, String> build() {
+                                return min5CheckParams();
+                            }
+                        }));
+                refreshMin5Coverage(false);
+                break;
+            }
+            case MIN5_INTEGRITY: {
+                // 这条任务没有自己的左栏按钮，只有「分钟数据」画面上的入口；
+                // 从历史台账点进来时至少给出它是什么
+                paramZone.add(hintLabel(
+                        "逐只核 T_D_Min5：有本地分钟文件的按文件补（连中间断档一起补），"
+                                + "没有文件的走在线线路；日线一根都不动"));
                 break;
             }
             case DIVIDEND: {
                 paramZone.add(hintLabel("读取本地除权除息数据，按报告期修正本地除权表"));
+                paramZone.add(pageAction("查缺补漏",
+                        "以本地除权文件为参照逐只核 T_Divdend：缺表 / 整表为空 / 落后于最新除权日的都会列出来，"
+                                + "点「修复缺失」用本地文件整只重写（旧表留成 T_Divdendbakup）",
+                        UpdateTask.DIVIDEND_INTEGRITY, new ParamBuilder() {
+                            @Override
+                            public Map<String, String> build() {
+                                return baseParams();
+                            }
+                        }));
+                break;
+            }
+            case DIVIDEND_INTEGRITY: {
+                paramZone.add(hintLabel(
+                        "用本地除权文件（gbbq）逐只核对各库的除权表；修复 = 用文件里的全部记录整只重写，"
+                                + "旧表会先备份成 T_Divdendbakup"));
                 break;
             }
             case INDEX_DATA: {
                 paramZone.add(hintLabel("取 " + updater.fetchdata.IndexCodes.all().size()
                         + " 个常用指数（上证 / 深证成指 / 创业板指 / 沪深300 / 中证500 / 中证1000 / 科创50 / 北证50）"
                         + "的全部日线；本地没有库会新建，已有的只补缺的日期。"
+                        + "取数走下面「数据来源」选的线路，默认读本地日线文件（不联网）。"
                         + "指数不参与选股，只在脚本里用 IDX(\"sh000001\", C) 引用"));
                 break;
             }
@@ -1475,6 +1622,180 @@ public class UpdaterFrame extends JFrame {
         return label;
     }
 
+    /** 参数区里的小字统计行（例如「库里 5 分钟线最新 …」） */
+    private JLabel statLabel(String text) {
+        JLabel label = new JLabel(text);
+        label.setFont(SMALL);
+        label.setForeground(UpdaterTheme.TEXT);
+        return label;
+    }
+
+    // ================================================================== 画面内的子任务
+
+    /** 子任务按钮要带的参数：点在哪个画面上，就用那个画面当下的选择 */
+    private interface ParamBuilder {
+        Map<String, String> build();
+    }
+
+    /**
+     * 画面里的子任务按钮。
+     *
+     * <p>这些任务（补历史 / 指数 / 三类查缺补漏）不再占左栏，但仍然是完整的任务：
+     * 点了就直接开跑，台账、进度、停止、续跑、修复缺失全都照旧 —— 只是入口换了地方。</p>
+     */
+    private JButton pageAction(String text, String tip, final UpdateTask task,
+                               final ParamBuilder builder) {
+        JButton button = UpdaterKit.button(text, new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                if (running) {
+                    return;
+                }
+                Map<String, String> params = builder.build();
+                if (params == null) {
+                    return;
+                }
+                startingHint(task);
+                startRun(task, params, null, null);
+            }
+        });
+        button.setFont(BODY);
+        button.setToolTipText(tip);
+        pageActions.add(button);
+        return button;
+    }
+
+    /** 从这里点起来的任务没有自己的页面，跑之前先把标题行换成它的名字，免得看串 */
+    private void startingHint(UpdateTask task) {
+        resultLabel.setForeground(UpdaterTheme.MUTED);
+        resultLabel.setText("正在执行「" + task.title + "」，结果见下方台账");
+    }
+
+    /** 公共参数：线路 + 两个 5 分钟开关（跟 collectParams 用的是同一份口径） */
+    private Map<String, String> baseParams() {
+        Map<String, String> params = new LinkedHashMap<String, String>();
+        params.put("source", selectedSourceId == null ? UpdateSources.AUTO : selectedSourceId);
+        params.put("checkMin5", Boolean.toString(checkMin5Box == null || checkMin5Box.isSelected()));
+        params.put("onlineMin5", Boolean.toString(onlineMin5Box == null || onlineMin5Box.isSelected()));
+        return params;
+    }
+
+    /** 股价查缺补漏的参数：范围取「盘后数据下载」那一行上的下拉框 */
+    private Map<String, String> integrityParams() {
+        Map<String, String> params = baseParams();
+        int index = rangeCombo == null ? 0 : rangeCombo.getSelectedIndex();
+        integrityMinTime = integrityMinTimeOf(index);
+        params.put("minTime", Long.toString(integrityMinTime));
+        params.put("mode", "scan");
+        return params;
+    }
+
+    /** 补全 5 分钟线：只读本地分钟文件、连断档一起补，所以线路固定是本地 */
+    private Map<String, String> min5FillParams() {
+        Map<String, String> params = baseParams();
+        params.put("source", Min5Downloader.LOCAL);
+        params.put("mode", "fill");
+        return params;
+    }
+
+    /** 5 分钟查缺补漏：越早的分钟缺口越没有补的价值，范围固定全部 */
+    private Map<String, String> min5CheckParams() {
+        Map<String, String> params = baseParams();
+        params.put("minTime", "0");
+        params.put("mode", "scan");
+        return params;
+    }
+
+    // ================================================================== 5 分钟覆盖度
+
+    /**
+     * 统计「库里最新」「本地文件最新」。
+     *
+     * <p>扫全库要几秒，所以永远在后台线程做；{@code force=false} 时 30 秒内用上次结果，
+     * 来回切页面不会每次都重扫。</p>
+     */
+    private void refreshMin5Coverage(boolean force) {
+        if (min5DbLabel == null) {
+            return;
+        }
+        if (!force && lastCoverage != null
+                && System.currentTimeMillis() - lastCoverageAt < 30_000L) {
+            showMin5Coverage(lastCoverage);
+            return;
+        }
+        final int generation = ++coverageGeneration;
+        min5DbLabel.setForeground(UpdaterTheme.MUTED);
+        min5DbLabel.setText("库里 5 分钟线：统计中…");
+        min5LocalLabel.setForeground(UpdaterTheme.MUTED);
+        min5LocalLabel.setText("本地文件：统计中…");
+        min5GapLabel.setText(" ");
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                Min5Coverage coverage = null;
+                try {
+                    coverage = Min5Coverage.scan(null);
+                } catch (Throwable t) {
+                    Log.error("统计 5 分钟覆盖度失败：" + t);
+                }
+                final Min5Coverage result = coverage;
+                SwingUtilities.invokeLater(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (generation != coverageGeneration) {
+                            return;
+                        }
+                        lastCoverage = result;
+                        lastCoverageAt = System.currentTimeMillis();
+                        showMin5Coverage(result);
+                    }
+                });
+            }
+        }, "min5-coverage");
+        thread.setDaemon(true);
+        thread.start();
+    }
+
+    private void showMin5Coverage(Min5Coverage coverage) {
+        if (min5DbLabel == null) {
+            return;
+        }
+        if (coverage == null) {
+            min5DbLabel.setForeground(UpdaterTheme.MUTED);
+            min5DbLabel.setText("库里 5 分钟线：统计失败");
+            min5LocalLabel.setForeground(UpdaterTheme.MUTED);
+            min5LocalLabel.setText("本地文件：统计失败");
+            min5GapLabel.setText(" ");
+            return;
+        }
+        min5DbLabel.setForeground(UpdaterTheme.TEXT);
+        min5DbLabel.setText(coverage.dbMaxTime > 0
+                ? "库里 5 分钟线最新 " + Min5Coverage.text(coverage.dbMaxTime)
+                        + " · " + countText(coverage.dbStocks)
+                : "库里 5 分钟线：" + (coverage.dbNote.isEmpty() ? "还没有数据" : coverage.dbNote));
+        min5LocalLabel.setForeground(UpdaterTheme.TEXT);
+        min5LocalLabel.setText(coverage.localMaxTime > 0
+                ? "本地文件最新 " + Min5Coverage.text(coverage.localMaxTime)
+                        + " · " + countText(coverage.localStocks)
+                : "本地文件：" + (coverage.localNote.isEmpty() ? "没有分钟数据" : coverage.localNote));
+
+        int behind = coverage.behindDays();
+        if (behind > 0) {
+            min5GapLabel.setForeground(UpdaterTheme.WARN_TEXT);
+            min5GapLabel.setText("库里比本地少 " + behind + " 天，点「补全到本地最新」");
+        } else if (coverage.dbMaxTime > 0 && coverage.localMaxTime > 0) {
+            min5GapLabel.setForeground(OK_COLOR);
+            min5GapLabel.setText("库里已经到本地最新");
+        } else {
+            min5GapLabel.setText(" ");
+        }
+    }
+
+    /** 「5,203 只」：数字过千带分隔，一眼能看出规模 */
+    private static String countText(int count) {
+        return String.format(java.util.Locale.ROOT, "%,d 只", count);
+    }
+
     // ================================================================== 启动 / 结束
 
     private void startSelectedTask() {
@@ -1495,12 +1816,9 @@ public class UpdaterFrame extends JFrame {
 
     /** 读界面上的参数；校验不通过返回 null（已经提示过用户） */
     private Map<String, String> collectParams(UpdateTask task) {
-        Map<String, String> params = new LinkedHashMap<String, String>();
         // 线路是公共参数：从画面上的「数据来源」面板读，默认自动，也可以点选具体线路。
         // 只对本次执行生效，不写配置、不写偏好；切任务时面板会重置回自动。
-        params.put("source", selectedSourceId == null ? UpdateSources.AUTO : selectedSourceId);
-        params.put("checkMin5", Boolean.toString(checkMin5Box == null || checkMin5Box.isSelected()));
-        params.put("onlineMin5", Boolean.toString(onlineMin5Box == null || onlineMin5Box.isSelected()));
+        Map<String, String> params = baseParams();
         switch (task) {
             case POST_DOWNLOAD: {
                 int days = 5;
@@ -1654,6 +1972,7 @@ public class UpdaterFrame extends JFrame {
         lastIntegritySummary = null;
         lastFinanceSummary = null;
         lastNameSummary = null;
+        lastDividendSummary = null;
         runningRepair = false;
         tableModel.setItems(ledger.items());
         tableModel.setSearch("");
@@ -1724,6 +2043,11 @@ public class UpdaterFrame extends JFrame {
      * 失败在 {@code collectParams} 阶段就已经拦下，不会走到这里。</p>
      */
     private boolean canOfferBackup(UpdateTask task, Map<String, String> attemptParams) {
+        // 「补全到本地最新」要的就是本地那份数据：换到在线线路补回来的日期对不齐，
+        // 直接报失败让人去查本地分钟文件更实在
+        if ("fill".equalsIgnoreCase(attemptParams.get("mode"))) {
+            return false;
+        }
         // 手选了具体线路也照样让切换兜底；tryBackups 会跳过刚试过的那一条
         return !cancel.get() && !UpdateSources.backups(task).isEmpty();
     }
@@ -1880,9 +2204,34 @@ public class UpdaterFrame extends JFrame {
                 break;
             }
             case MIN_DATA:
-                // 走带线路切换的那条：本地分钟文件读不出来时，备用线路会接着试
-                runMinDataTask(params.get("source"));
+                // 「补全到本地最新」与「只补增量」是同一件事的两个档，走同一个任务、不同 mode
+                if ("fill".equalsIgnoreCase(params.get("mode"))) {
+                    runMin5FillTask();
+                } else {
+                    // 走带线路切换的那条：本地分钟文件读不出来时，备用线路会接着试
+                    runMinDataTask(params.get("source"));
+                }
                 break;
+            case MIN5_INTEGRITY: {
+                boolean fix = "fix".equalsIgnoreCase(params.get("mode"));
+                boolean onlineMin5 = !"false".equalsIgnoreCase(params.get("onlineMin5"));
+                runningRepair = fix;
+                // 日线不参与：这几趟只动 T_D_Min5
+                lastIntegritySummary = fix
+                        ? DataIntegrityChecker.repair(logSink(), ledger, cancel, onlyKeys, 0L,
+                                true, onlineMin5, false)
+                        : DataIntegrityChecker.scan(logSink(), ledger, cancel, onlyKeys, 0L,
+                                true, false);
+                break;
+            }
+            case DIVIDEND_INTEGRITY: {
+                boolean fix = "fix".equalsIgnoreCase(params.get("mode"));
+                runningRepair = fix;
+                lastDividendSummary = fix
+                        ? DividendIntegrityChecker.repair(logSink(), ledger, cancel, onlyKeys)
+                        : DividendIntegrityChecker.scan(logSink(), ledger, cancel, onlyKeys);
+                break;
+            }
             case STOCK_NAME: {
                 // 名称是跟着行情接口一起取的，所以这里要单独走一条能传来源的路
                 String key = ledger.task().title;
@@ -1902,11 +2251,19 @@ public class UpdaterFrame extends JFrame {
             case DIVIDEND:
                 runConsoleTask(dividendClassOf(params.get("source")), false);
                 break;
-            case INDEX_DATA:
-                // 指数走跟个股同一套取数 / 建库，只是代码清单由任务给定（见 IndexCodes）
-                EastMoneyDayFetcher.run(logSink(), ledger, cancel, onlyKeys, 0, true,
-                        updater.fetchdata.IndexCodes.all());
+            case INDEX_DATA: {
+                // 按画面上「数据来源」分流：默认（自动）读本地 vipdoc 里指数的 .day，
+                // 备用才在线逐只拉。代码清单两条路一致，都由 IndexCodes 给定。
+                String sourceId = UpdateSources.resolveId(UpdateTask.INDEX_DATA, params.get("source"));
+                if (UpdateSources.EASTMONEY.equals(sourceId)) {
+                    EastMoneyDayFetcher.run(logSink(), ledger, cancel, onlyKeys, 0, true,
+                            updater.fetchdata.IndexCodes.all());
+                } else {
+                    IndexLocalFetcher.run(logSink(), ledger, cancel, onlyKeys,
+                            updater.fetchdata.IndexCodes.all());
+                }
                 break;
+            }
             case ANNOUNCEMENT: {
                 int days = intParam(params, "days", 7);
                 String key = "最近 " + days + " 天公告";
@@ -2000,6 +2357,11 @@ public class UpdaterFrame extends JFrame {
         }
         refreshHistoryPanel();
         refreshStatusBar();
+        // 跑完 5 分钟相关的任务，回来后那一行「库里 / 本地到哪一天了」要跟着变
+        lastCoverageAt = 0L;
+        if (selectedTask == UpdateTask.MIN_DATA) {
+            refreshMin5Coverage(true);
+        }
 
         Runnable after = afterFinish;
         afterFinish = null;
@@ -2010,11 +2372,17 @@ public class UpdaterFrame extends JFrame {
 
     private String summaryLine(UpdateLedger ledger) {
         long seconds = (System.currentTimeMillis() - runStartMillis) / 1000;
-        if (ledger.task() == UpdateTask.INTEGRITY && lastIntegritySummary != null) {
+        if ((ledger.task() == UpdateTask.INTEGRITY
+                || ledger.task() == UpdateTask.MIN5_INTEGRITY) && lastIntegritySummary != null) {
             // 体检 / 修复的结论不是「完成几只、失败几只」，而是「缺了多少、补了多少」
             return runningRepair
                     ? lastIntegritySummary.describeRepair()
                     : lastIntegritySummary.describeScan();
+        }
+        if (ledger.task() == UpdateTask.DIVIDEND_INTEGRITY && lastDividendSummary != null) {
+            return runningRepair
+                    ? lastDividendSummary.describeRepair()
+                    : lastDividendSummary.describeScan();
         }
         if (ledger.task() == UpdateTask.FINANCE_INTEGRITY && lastFinanceSummary != null) {
             return runningRepair
@@ -2053,14 +2421,17 @@ public class UpdaterFrame extends JFrame {
         for (JButton button : checkButtons.values()) {
             button.setEnabled(!isRunning);
         }
+        for (JButton button : pageActions) {
+            button.setEnabled(!isRunning);
+        }
     }
 
-    /** 分钟线 / 除权 / 名称是「反射调 main」，中途停不了 */
+    /** 分钟线 / 除权 / 名称是「反射调 main」，中途停不了；5 分钟线那条已经能逐只收手 */
     private boolean canStop(UpdateTask task) {
         return task == UpdateTask.POST_DOWNLOAD || task == UpdateTask.LATEST_PRICE
                 || task == UpdateTask.HISTORY || task == UpdateTask.FINANCE
                 || task == UpdateTask.HOLDER_SYNC || task == UpdateTask.RISK_VALUATION
-                || task == UpdateTask.PIT_NOTICE
+                || task == UpdateTask.PIT_NOTICE || task == UpdateTask.MIN_DATA
                 || task.isCheck();
     }
 
@@ -2123,6 +2494,32 @@ public class UpdaterFrame extends JFrame {
             throw cause instanceof Exception ? (Exception) cause : new RuntimeException(cause);
         }
         afterFinish = announcementSync(7);
+    }
+
+    /**
+     * 「补全到本地最新」：把库里缺的 5 分钟线补到本地分钟文件的最后一刻。
+     *
+     * <p>跟日常那条的区别只有一个：日常只补末根之后的增量（最快），这条连中间断掉的
+     * 某几天一起补。所以它只读本地文件、不联网 —— 要补的就是「本地那份到哪，库里就得到哪」，
+     * 混进在线数据反而对不齐。</p>
+     */
+    private void runMin5FillTask() throws Exception {
+        String key = ledger.task().title;
+        ledger.plan(Collections.singletonList(key));
+        ledger.begin(key);
+        logSink().accept("== 补全 5 分钟线：读本地分钟文件，把库里缺的补到本地最新那一刻"
+                + "（连中间断掉的几天一起补，只补不删，不联网）");
+        HangWatchdog.start("补全 5 分钟线", logSink());
+        try {
+            int[] stat = Min5Downloader.runLocalFill(logSink(), cancel, null);
+            ledger.done(key, "股票 " + stat[0] + " 只，写入 " + stat[1] + " 根，跳过 " + stat[2] + " 只");
+        } catch (Throwable t) {
+            Throwable cause = unwrap(t);
+            ledger.fail(key, errorMessage(cause));
+            throw cause instanceof Exception ? (Exception) cause : new RuntimeException(cause);
+        } finally {
+            HangWatchdog.stop();
+        }
     }
 
     /** 更新完顺手同步最近几天的全市场公告（几秒钟，一天 30 页就够） */
@@ -2766,6 +3163,18 @@ public class UpdaterFrame extends JFrame {
                                 : "按设置跳过。")
                         + "\n已经完整的不会动。";
                 break;
+            case MIN5_INTEGRITY:
+                what = "只补 5 分钟线，日线一根都不动：\n"
+                        + "本地有分钟文件的，从文件补到最新（连中间断掉的几天一起补）；\n"
+                        + "没有文件的" + (onlineMin5Box == null || onlineMin5Box.isSelected()
+                                ? "走在线线路逐只取（会多花几分钟）。" : "按设置跳过。")
+                        + "\n已经到最新的不会动。";
+                break;
+            case DIVIDEND_INTEGRITY:
+                what = "用本地除权文件里的全部记录，整只重写这几只的 T_Divdend。\n"
+                        + "旧表会先改名成 T_Divdendbakup 留着，随时能捞回来。\n"
+                        + "库里日线覆盖不到更早的除权日时，那几条写不进去（取不到前收盘价）。";
+                break;
             case FINANCE_INTEGRITY:
                 what = "只补每季查出来「缺的那几只」：财报按代码单条写入、股东只重新抓那几只，"
                         + "同一季其它股票一个字节都不动。\n"
@@ -2788,12 +3197,12 @@ public class UpdaterFrame extends JFrame {
         }
         Map<String, String> params = new LinkedHashMap<String, String>();
         params.put("mode", "fix");
+        params.put("onlineMin5", Boolean.toString(
+                onlineMin5Box == null || onlineMin5Box.isSelected()));
         if (task == UpdateTask.INTEGRITY) {
             params.put("minTime", Long.toString(integrityMinTime));
             params.put("checkMin5", Boolean.toString(
                     checkMin5Box == null || checkMin5Box.isSelected()));
-            params.put("onlineMin5", Boolean.toString(
-                    onlineMin5Box == null || onlineMin5Box.isSelected()));
         } else if (task == UpdateTask.FINANCE_INTEGRITY) {
             params.put("years", Integer.toString(financeCheckYears));
             params.put("refreshHolders", Boolean.toString(refreshHoldersOnRepair));

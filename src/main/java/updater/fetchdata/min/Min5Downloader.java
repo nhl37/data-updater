@@ -74,6 +74,25 @@ public final class Min5Downloader {
         return stat;
     }
 
+    /**
+     * 只用本地分钟文件，把库补到「本地文件最深那一刻」—— 连中间断掉的几段一起补。
+     *
+     * <p>这是「分钟数据」画面上那个「补全到本地最新」按钮走的入口：它<b>不联网</b>，
+     * 因为要补的就是「本地那份数据到哪，库里就得到哪」这件事。日常盘后那条只补末根之后的
+     * 增量，中间断过的几天它看不见。</p>
+     *
+     * @param onlyCodes 只补这几只，null = 全部
+     * @return {成功只数, 写入根数, 跳过只数}
+     */
+    public static int[] runLocalFill(Consumer<String> log, AtomicBoolean cancel,
+                                     Collection<String> onlyCodes) throws Exception {
+        int[] stat = MinDataUpdater.update(log, cancel, onlyCodes, true);
+        if (stat[0] == 0) {
+            throw new IOException("本地数据来源里没有可用的分钟线文件（一只都没读到）");
+        }
+        return stat;
+    }
+
     private static String normalize(String sourceId) {
         String id = sourceId == null ? "" : sourceId.trim().toLowerCase(Locale.ROOT);
         if (ONLINE.equals(id)) {

@@ -4,9 +4,9 @@ package updater.main.updater;
  * 数据更新程序里的任务。
  *
  * <p>界面左侧按<b>数据类别</b>分成四组（{@link Group}）：股价数据、财报与股东、
- * 研究数据、其他数据。所有任务都在左栏列出来，包括三组的「查缺补漏」——
- * 以前它们藏在组标题上的按钮里，用户找不到，现在一律摆到明面上。组标题上的
- * 按钮仍然留着，只是多一个快捷入口。</p>
+ * 研究数据、其他数据。左栏只放「常用入口」；补历史、指数、以及各数据类型的
+ * 「查缺补漏」都挪进了对应画面里（日线在「盘后数据下载」、5 分钟在「分钟数据」、
+ * 除权在「除权数据更新」），点一下就在那一页开跑，台账照旧。</p>
  *
  * <p>{@code unit} 是台账里每一行的单位（只 / 个季度 / 项），{@code resumable}
  * 表示中断后能不能「接着跑剩下的」—— 能续跑的才需要在台账里记清单。</p>
@@ -26,9 +26,12 @@ public enum UpdateTask {
             "从行情接口拉全市场最新价，本地没有库就建；写完会问要不要连 5 分钟线一起补",
             "只", false, true, Group.PRICE),
 
+    // 补历史 / 指数 / 股价查缺补漏都挂在「盘后数据下载」画面里，不再占左栏：
+    // 它们跟盘后下载是同一批日线数据的不同入口，分成四个左栏按钮反而让人以为
+    // 是四种不同的数据（见 UpdaterFrame 的 POST_DOWNLOAD 参数区）
     HISTORY("history", "补充历史记录",
             "把本地数据来源里的全部历史日线并进本地库，本地没有库就建（场内基金第一次进来靠它）",
-            "只", true, true, Group.PRICE),
+            "只", true, true, Group.PRICE, false, false),
 
     MIN_DATA("min", "分钟数据（5 分钟）",
             "读 5 分钟线入库，只补不删；默认读本地分钟文件，在线这一档可在"
@@ -37,17 +40,27 @@ public enum UpdateTask {
                     + "这里用于单独补跑",
             "项", true, false, Group.PRICE),
 
+    MIN5_INTEGRITY("integrity_min5", "5 分钟 · 查缺补漏",
+            "逐只核 T_D_Min5：表在不在、末根有没有落后、最近 10 个交易日有没有整天缺；"
+                    + "缺的有本地分钟文件就从文件补，没有的走在线线路",
+            "只", true, true, Group.PRICE, false, true),
+
     DIVIDEND("dividend", "除权数据更新",
             "读取本地除权除息数据，按报告期修正除权表", "项", false, false, Group.PRICE),
 
+    DIVIDEND_INTEGRITY("integrity_dividend", "除权 · 查缺补漏",
+            "以本地除权文件为参照逐只核 T_Divdend：缺表 / 整表为空 / 落后于最新除权日的，"
+                    + "可以一键整只重写",
+            "只", true, true, Group.PRICE, false, true),
+
     INDEX_DATA("index", "指数数据",
             "取常用指数的全部日线（点数 + 成交量 / 成交额），建在同一个库里；"
-                    + "脚本里用 IDX(\"sh000001\", C) 引用，不参与选股",
-            "个", false, true, Group.PRICE),
+                    + "默认读本地日线文件，取不到再走在线；脚本里用 IDX(\"sh000001\", C) 引用，不参与选股",
+            "个", false, true, Group.PRICE, false, false),
 
     INTEGRITY("integrity", "股价数据 · 查缺补漏",
             "逐只对账本地数据来源与本地日线、5 分钟线，找出缺库 / 缺日期 / 分钟线落后，可一键补齐",
-            "只", true, true, Group.PRICE, true, true),
+            "只", true, true, Group.PRICE, false, true),
 
     // ---------------------------------------------------------------- 财报与股东
     FINANCE("finance", "下载财报数据",
@@ -92,7 +105,9 @@ public enum UpdateTask {
 
     /** 数据类别：一组一个「查缺补漏」按钮 */
     public enum Group {
-        PRICE("股价数据", "日线 · 分钟 · 除权 · 指数", "integrity"),
+        // 股价数据的三个查缺补漏各自挂在对应画面上（日线在「盘后数据下载」、
+        // 5 分钟在「分钟数据」、除权在「除权数据更新」），组标题上不再重复放一个
+        PRICE("股价数据", "日线 · 分钟 · 除权", null),
         FINANCE("财报与股东", "财报季度 · 十大流通股东 · 股本", "integrity_finance"),
         RESEARCH("研究数据", "风险事件 · 解禁 · 估值 · 披露日 · 公告", null),
         OTHER("其他数据", "股票名称", "integrity_name");

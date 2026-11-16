@@ -133,6 +133,17 @@ public final class UpdateSources {
                 new Source(TDX, true),
                 new Source(EASTMONEY, false));
 
+        // 指数：默认读本地数据来源 vipdoc 里指数的 .day（一次读 8 个文件，不联网）；
+        // 本地没配目录 / 文件缺失时，备用换成在线逐只拉。跟「盘后数据下载」同一套顺序。
+        //
+        // 这里的 needsTdx 故意给 false：指数清单固定只有 8 个，在线那条线能完整覆盖，
+        // 所以本地目录没配时不该在开跑前弹「去配路径」把人挡住 —— 那样「自动」就永远
+        // 落不到备份。缺目录 / 缺文件留给 IndexLocalFetcher 在运行时抛出，由
+        // startRun 的「要不要换一条线路再试」接住，用户点一下就走到东财。
+        put(UpdateTask.INDEX_DATA,
+                new Source(TDX, false),
+                new Source(EASTMONEY, false));
+
         // 除权：默认读本地数据来源的除权文件，备用走另一套本地除权文件（大智慧）。
         // 在线抓除权（东财）那条线路已经下线：它的字段口径与本地文件不一致，
         // 只取了「除权日 + 方案原文」，修正效果不如直接读两套本地文件。
